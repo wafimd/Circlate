@@ -7656,6 +7656,7 @@ Circlate is built in two waves. **Wave 1 (MVP)** delivers the core platform that
 | Leave balance display (web + mobile) | Full Stack |
 | Flutter: leave request wizard (3-step, < 60s target) | Mobile |
 | Flutter: manager approval screen (one-tap) | Mobile |
+| Deputy assignment on leave request (optional field; covered-by display on leave list) | Full Stack |
 | Attendance integration: approved leave marks attendance as Leave | Backend |
 
 **Exit criteria:** Full leave request → approval → balance deduction cycle in < 60 seconds on mobile.
