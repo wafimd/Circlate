@@ -1,4 +1,4 @@
-# Circlate — Workforce Operating System
+﻿# Circlate — Workforce Operating System
 
 ## Complete Architecture & Design Package
 
@@ -7683,23 +7683,77 @@ Circlate is built in two waves. **Wave 1 (MVP)** delivers the core platform that
 
 ---
 
-#### Sprint 6 — Recruitment ATS (2 weeks)
+#### Sprint 6 — Hiring (3 weeks)
 
-**Goal:** Recruiters manage the full hiring pipeline on a Kanban board.
+**Goal:** End-to-end hiring flow — from job posting to onboarded employee, including work pass tracking and certification handoff.
+
+> **Public-facing module name:** Hiring (not "ATS")
+
+##### Bounded Context Notes
+
+- Candidate documents uploaded during hiring **migrate automatically to the employee record on hire confirmation** — no re-upload
+- Certifications (diplomas, professional certs) are **created as structured records from candidate uploads** — issuing body, cert number, expiry
+- Nationality determines work pass requirement automatically via tenant-configured `LocalNationalities` list — no manual flag
+- Hiring participants (Hiring Manager, Interviewers, Offer Approver) are `EmployeeId` FKs on the job posting, interview record, and offer respectively
+
+##### Domain Entities
+
+| Entity | Key Fields |
+| --- | --- |
+| `JobPosting` | TenantId, Title, Department, HiringManagerId (FK->Employee), Stage, IsOpen |
+| `Candidate` | TenantId, FullName, Email, Nationality, LinkedJobPostingId |
+| `Application` | CandidateId, JobPostingId, Stage, Notes |
+| `Interview` | ApplicationId, ScheduledAt, InterviewerIds[], Notes, Outcome |
+| `Offer` | ApplicationId, Salary, Currency, StartDate, ApproverId (FK->Employee), Status, AcceptedAt |
+| `WorkPassApplication` | OfferId, PassType, AppliedAt, ApprovedAt, PassNumber, ExpiresAt, DocumentId (FK->Document) |
+| `OnboardingChecklist` | EmployeeId, Tasks (name, dueDate, completedAt, assignedToId) |
+| `Certification` | EmployeeId, Name, IssuingBody, CertNumber, IssuedAt, ExpiresAt, DocumentId (FK->Document) |
+
+##### Work Pass Types (Brunei)
+
+| Type | Condition |
+| --- | --- |
+| Employment Pass | Professional/managerial foreign hire |
+| Temporary Employment Pass (TEP) | Skilled/semi-skilled foreign hire |
+| None | Nationality in tenant `LocalNationalities` list (e.g. Brunei Citizen, Brunei PR) |
+
+##### Pipeline Stages
+
+```
+Job Posted -> Screening -> Interview -> Offer -> Work Pass (if required) -> Onboarding -> Hired
+```
+
+Work Pass stage is skipped automatically for local nationals.
+
+##### Hiring Participants
+
+| Role | Assigned On | Responsibility |
+| --- | --- | --- |
+| Hiring Manager | Job posting creation | Owns the requisition, makes final call |
+| Interviewer(s) | Per interview record | Notified on assignment, submits outcome |
+| Offer Approver | Offer creation | Must approve before offer letter is sent (optional per tenant) |
+
+##### Tasks
 
 | Task | Owner |
 | --- | --- |
+| Domain entities + DB migration (all 8 entities above) | Backend |
 | Job posting API + create/edit UI | Full Stack |
-| Candidate API + profile UI | Full Stack |
-| Application API (stage transitions) | Backend |
-| Kanban board UI (@dnd-kit drag-and-drop, 7 columns) | Frontend |
-| Candidate detail Sheet (resume, notes, history) | Frontend |
-| Interview scheduling UI | Frontend |
-| Resume upload (PDF/DOCX to MinIO) | Backend |
-| Pipeline stats report (conversion rates, time-to-hire) | Full Stack |
-| Offer creation + acceptance → employee creation handoff | Full Stack |
+| Candidate profile API + UI (with nationality field) | Full Stack |
+| Application API (stage transitions with participant notifications) | Backend |
+| Kanban board UI (stages as columns, drag-and-drop) | Frontend |
+| Candidate document upload (CV, passport, certs, diplomas) | Full Stack |
+| Interview scheduling + interviewer assignment UI | Full Stack |
+| Offer creation + approver assignment + offer letter PDF | Full Stack |
+| Nationality check -> work pass flow insertion | Backend |
+| Work pass application tracking UI | Frontend |
+| On-hire: document migration to employee record | Backend |
+| On-hire: certification records created from candidate uploads | Backend |
+| Onboarding checklist (task list, assignee, due date) | Full Stack |
+| Pipeline stats (conversion rates, time-to-hire, open roles) | Full Stack |
+| Tenant config: LocalNationalities list (Admin) | Full Stack |
 
-**Exit criteria:** Recruiter drags candidate from Applied to Hired; employee creation wizard pre-populated from candidate data.
+**Exit criteria:** Foreign candidate moves from Applied to Hired; work pass step present and tracked; candidate documents visible on employee profile post-hire; onboarding checklist assigned and completable.
 
 ---
 
@@ -8462,3 +8516,4 @@ All queries and mutations are scoped by `TenantId` via `GetTenantId(HttpContext)
 ---
 
 *BC-20 Workforce Time Management — Principal Architect Sign-off: 2026-11-11*
+
