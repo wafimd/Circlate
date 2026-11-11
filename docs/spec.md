@@ -7899,3 +7899,566 @@ A story is Done when:
 7. RBAC permissions verified for all roles in scope
 8. Audit log entries verified for all write operations
 9. Mobile: tested on iOS Simulator + Android Emulator minimum; physical device for QR/GPS flows
+﻿
+---
+
+## BC-20 · Workforce Time Management
+
+> **Status:** Approved — ARB Review Passed
+> **Wave:** 2 · Professional Tier
+> **Author:** Principal Architect
+> **Date:** 2026-11-11
+> **Depends on:** BC-07 Attendance, BC-10 Org Chart, BC-09 Expenses (authority model)
+
+---
+
+### 1. Business Analysis
+
+#### Problem Statement
+
+Attendance tracking (BC-07) confirms *presence* — it records when an employee arrives and departs. It answers "Was Ahmad here on Tuesday?" It does not answer "What was Ahmad working on Tuesday, and for how long?" These are fundamentally different questions: the first feeds payroll compliance; the second feeds project billing, resource planning, and performance analysis.
+
+ASEAN SMEs in professional services (consulting, legal, engineering, government contracting) must allocate time against engagements for client billing and internal cost accounting. No credible Workforce OS for this segment can omit timesheets.
+
+#### Business Outcomes
+
+| # | Outcome | Metric |
+|---|---------|--------|
+| 1 | HR/Finance can produce a labour cost report per project without manual spreadsheets | Report generated < 5 min, zero manual data entry |
+| 2 | Employees submit weekly timesheets with < 5 min effort | Submission rate > 90% by end of quarter 1 |
+| 3 | Managers approve/reject timesheets without leaving Circlate | Approval turnaround median < 24 h |
+| 4 | Integration with Payroll module uses timesheet-verified hours for overtime calculation | Payroll diff < 1% vs attendance-only baseline |
+| 5 | Professional-tier upsell: 40% of Starter tenants convert within 6 months of GA | Revenue tracked via subscription events |
+
+#### Stakeholder Map
+
+| Role | Pain | Gain |
+|------|------|------|
+| Employee | Filling timesheets in Excel, emailing to manager | One-click weekly submission from mobile or web |
+| Project Manager | No visibility of team allocation without chasing | Real-time burn dashboard, over/under alerts |
+| Finance | Manual reconciliation of hours to billing runs | API export to billing system, locked timesheet audit trail |
+| HR | Overtime disputes, no audit log | Immutable correction history with reason codes |
+| Tenant Admin | No config control over approval chains | Policy-based rules: who approves, escalation timeout |
+
+#### Regulatory Context (Brunei)
+
+- Employment Order 2009 §17–19: overtime records must be kept for three years
+- Government contracts (PAPD guidelines): staff utilisation reports required for cost-reimbursable engagements
+- PDN / PDPO (forthcoming): employee time records are personal data; retention and access rules apply
+
+---
+
+### 2. Bounded Context Definition
+
+**BC-20 Workforce Time Management** is distinct from:
+
+| BC | Responsibility | Boundary |
+|----|----------------|---------|
+| BC-07 Attendance | Presence recording (clock-in/out) | Supplies daily confirmed hours as a *read model* input to BC-20; does not own allocation |
+| BC-09 Expenses | Cost claims, financial approval | Shares authority model but owns its own approval domain |
+| BC-10 Org Chart | Reporting lines, position hierarchy | BC-20 queries for manager resolution; does not write to org chart |
+| BC-18 Payroll (future) | Pay calculation | Consumes BC-20 approved timesheet summaries as payroll input via integration event |
+
+**BC-20 owns:**
+- Timesheet lifecycle (Draft → Submitted → Approved / Rejected → Locked)
+- Project/task code catalogue
+- Approval workflow definition per tenant policy
+- Audit trail of all mutations
+- Reporting aggregates (hours by project, by employee, by period)
+
+**BC-20 does NOT own:**
+- Clock-in / clock-out events (BC-07)
+- Leave records (BC-05)
+- Payroll disbursement (BC-18)
+
+---
+
+### 3. Ubiquitous Language
+
+| Term | Definition |
+|------|-----------|
+| **Timesheet** | A collection of time entries for one employee covering a defined period (typically one week), subject to a single approval decision |
+| **Time Entry** | One allocation line on a timesheet: date, project/task, hours, description |
+| **Period** | The unit of a timesheet — weekly by default; configurable per tenant to bi-weekly or monthly |
+| **Project Code** | A billable or internal cost code against which time is allocated |
+| **Task** | An optional sub-code under a Project Code |
+| **Submission** | The act of an employee finalising a draft timesheet and presenting it for manager approval |
+| **Approval** | Manager's decision to Accept or Return a submitted timesheet |
+| **Lock** | Immutable state after payroll processing; no further edits permitted |
+| **Correction** | An HR-initiated override with a mandatory reason code, creating an audit entry |
+| **Burn** | Accumulated approved hours against a Project Code budget, used in project planning |
+
+---
+
+### 4. Domain Model
+
+```
+TimesheetPeriodPolicy          Timesheet                    TimeEntry
+─────────────────────          ─────────────────            ──────────────────
+TenantId: Guid                 Id: Guid (PK)                Id: Guid (PK)
+PeriodType: enum               TenantId: Guid               TimesheetId: Guid (FK)
+  Weekly                       EmployeeId: Guid (FK)        Date: DateOnly
+  BiWeekly                     PeriodStart: DateOnly        ProjectCodeId: Guid (FK)
+  Monthly                      PeriodEnd: DateOnly          TaskId: Guid? (FK)
+StartDayOfWeek: DayOfWeek      Status: TimesheetStatus      Hours: decimal (0.25 steps)
+SubmissionDeadlineDays: int      Draft                      Description: string?
+AutoReminderEnabled: bool        Submitted                  Source: EntrySource
+AutoReminderHours: int           Approved                     Manual
+                                 Rejected                     ImportedFromAttendance
+                                 Locked                     CreatedAt: DateTime
+                               SubmittedAt: DateTime?        UpdatedAt: DateTime
+                               ReviewedAt: DateTime?         IsManualCorrection: bool
+                               ReviewedBy: Guid?
+                               Notes: string?
+
+ProjectCode                    TimesheetApprovalPolicy       TimesheetAuditEntry
+──────────────                 ───────────────────────       ──────────────────
+Id: Guid (PK)                  TenantId: Guid (PK)           Id: Guid (PK)
+TenantId: Guid                 ApproverResolution: enum      TimesheetId: Guid (FK)
+Code: string                     DirectManager               ActorId: Guid
+Name: string                     SpecificRole                Action: string
+Description: string?             Disabled                   OldStatus: TimesheetStatus?
+IsActive: bool                 EscalationEnabled: bool       NewStatus: TimesheetStatus?
+IsBillable: bool               EscalationAfterHours: int     Reason: string?
+Budget: decimal? (hours)       EscalationTargetRoleId: Guid? Timestamp: DateTime
+StartDate: DateOnly?
+EndDate: DateOnly?
+ClientName: string?
+ExternalCode: string?
+```
+
+#### Invariants
+
+1. `Hours` per entry must be a multiple of 0.25 and in range [0.25, 24].
+2. Sum of hours on a single date across all entries for one employee must not exceed 24.
+3. A timesheet cannot be Submitted if any entry has 0 hours.
+4. Only HR role may apply Correction to a Locked timesheet.
+5. A Locked timesheet generates an immutable `TimesheetAuditEntry` before any override.
+6. `PeriodStart` and `PeriodEnd` are computed from `TimesheetPeriodPolicy`; they cannot be edited directly.
+
+---
+
+### 5. Database Design
+
+```sql
+-- Timesheet period policy (one per tenant)
+CREATE TABLE timesheet_period_policies (
+    tenant_id        UUID PRIMARY KEY REFERENCES tenants(id),
+    period_type      TEXT NOT NULL DEFAULT 'Weekly',
+    start_dow        INT  NOT NULL DEFAULT 1,
+    deadline_days    INT  NOT NULL DEFAULT 2,
+    reminder_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    reminder_hours   INT  NOT NULL DEFAULT 48
+);
+
+-- Project codes
+CREATE TABLE project_codes (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    code          TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    is_billable   BOOLEAN NOT NULL DEFAULT FALSE,
+    budget_hours  NUMERIC(10,2),
+    start_date    DATE,
+    end_date      DATE,
+    client_name   TEXT,
+    external_code TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, code)
+);
+
+-- Tasks (sub-codes)
+CREATE TABLE tasks (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_code_id UUID NOT NULL REFERENCES project_codes(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+-- Timesheets
+CREATE TABLE timesheets (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    employee_id  UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    period_start DATE NOT NULL,
+    period_end   DATE NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'Draft',
+    submitted_at TIMESTAMPTZ,
+    reviewed_at  TIMESTAMPTZ,
+    reviewed_by  UUID REFERENCES employees(id),
+    notes        TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, employee_id, period_start)
+);
+
+-- Time entries (timesheets — distinct from BC-07 attendance time_entries)
+CREATE TABLE time_entries_ts (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timesheet_id         UUID NOT NULL REFERENCES timesheets(id) ON DELETE CASCADE,
+    date                 DATE NOT NULL,
+    project_code_id      UUID NOT NULL REFERENCES project_codes(id),
+    task_id              UUID REFERENCES tasks(id),
+    hours                NUMERIC(4,2) NOT NULL,
+    description          TEXT,
+    source               TEXT NOT NULL DEFAULT 'Manual',
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_manual_correction BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+-- Approval policy
+CREATE TABLE timesheet_approval_policies (
+    tenant_id              UUID PRIMARY KEY REFERENCES tenants(id),
+    approver_resolution    TEXT NOT NULL DEFAULT 'DirectManager',
+    escalation_enabled     BOOLEAN NOT NULL DEFAULT FALSE,
+    escalation_after_hours INT NOT NULL DEFAULT 48,
+    escalation_role_id     UUID
+);
+
+-- Audit log
+CREATE TABLE timesheet_audit_entries (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timesheet_id UUID NOT NULL REFERENCES timesheets(id) ON DELETE CASCADE,
+    actor_id     UUID NOT NULL,
+    action       TEXT NOT NULL,
+    old_status   TEXT,
+    new_status   TEXT,
+    reason       TEXT,
+    timestamp    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_timesheets_tenant_employee ON timesheets (tenant_id, employee_id);
+CREATE INDEX idx_timesheets_period ON timesheets (tenant_id, period_start, period_end);
+CREATE INDEX idx_time_entries_ts_timesheet ON time_entries_ts (timesheet_id);
+CREATE INDEX idx_time_entries_ts_project ON time_entries_ts (project_code_id, date);
+CREATE INDEX idx_audit_timesheet ON timesheet_audit_entries (timesheet_id);
+```
+
+> **Note:** `time_entries_ts` is named to avoid collision with BC-07 `time_entries` (clock-in/out). A view `v_employee_daily_hours` can join both for a unified daily picture.
+
+---
+
+### 6. Approval Workflow
+
+```
+Employee                                     Manager / Approver
+   |                                                 |
+   | [completes entries]                             |
+   |------ Submit ---------------------------------> |
+   |                                           Notification
+   |                                                 |
+   |                                        [Reviews timesheet]
+   |                                                 |
+   |                    +---------------- Approve -> Approved -> auto-Lock at payroll
+   | <-----------------+
+   | [Returned]         +-------- Return (Reject) -> Rejected
+
+If ApproverResolution = Disabled -> auto-Approve on Submit
+If EscalationEnabled and no action after N hours -> escalate to role
+```
+
+#### Status Transitions
+
+| From | To | Actor | Condition |
+|------|-----|-------|-----------|
+| Draft | Submitted | Employee | All entries valid |
+| Submitted | Approved | Manager / HR | — |
+| Submitted | Rejected | Manager / HR | Reason required |
+| Rejected | Draft | Employee | Re-open for editing |
+| Approved | Locked | System (payroll trigger) | Payroll run event |
+| Locked | Locked* | HR only | Correction with mandatory reason; always writes audit entry first |
+
+---
+
+### 7. Domain Events
+
+All events published via Outbox pattern to the internal message bus.
+
+| Event | Trigger | Consumers |
+|-------|---------|-----------|
+| `TimesheetSubmitted` | Employee submits | Notification → manager, Audit |
+| `TimesheetApproved` | Manager approves | Notification → employee, Audit, BC-18 Payroll stub |
+| `TimesheetRejected` | Manager rejects | Notification → employee, Audit |
+| `TimesheetLocked` | Payroll run | Audit |
+| `TimesheetCorrected` | HR correction post-lock | Audit, BC-18 Payroll diff |
+| `ProjectCodeCreated` | Admin creates code | Audit |
+| `ProjectCodeDeactivated` | Admin deactivates | Notification → employees with open entries on that code |
+
+#### Event Envelope
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "TimesheetSubmitted",
+  "tenantId": "uuid",
+  "occurredAt": "2026-11-11T08:00:00Z",
+  "payload": {
+    "timesheetId": "uuid",
+    "employeeId": "uuid",
+    "periodStart": "2026-11-10",
+    "periodEnd": "2026-11-14"
+  }
+}
+```
+
+---
+
+### 8. Notifications
+
+| Trigger | Recipient | Channel | Template |
+|---------|-----------|---------|---------|
+| Timesheet submitted | Direct manager | In-app + email | "{{employee}} submitted timesheet for {{period}}. Review by {{deadline}}." |
+| Approval overdue (escalation) | Escalation role | In-app + email | "Timesheet by {{employee}} unapproved for {{hours}}h. Escalated to you." |
+| Timesheet approved | Employee | In-app | "Your timesheet for {{period}} was approved." |
+| Timesheet rejected | Employee | In-app + email | "Your timesheet for {{period}} was returned: {{reason}}" |
+| Submission deadline approaching | Employee | In-app | "Your timesheet for {{period}} is due in {{hours}}h." |
+| Project code budget 80% consumed | Project owner | In-app + email | "{{code}} is at {{pct}}% of budget ({{used}}/{{budget}} hours)." |
+
+---
+
+### 9. API Design
+
+Base path: `/api/timesheets`
+Auth: Bearer JWT, `tid` claim for tenant isolation.
+
+#### Timesheets
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/timesheets` | List own timesheets (employee) or all (manager/HR) with filters |
+| GET | `/api/timesheets/{id}` | Get single timesheet with entries |
+| POST | `/api/timesheets` | Create draft for a period (idempotent — returns existing if period exists) |
+| POST | `/api/timesheets/{id}/submit` | Submit for approval |
+| POST | `/api/timesheets/{id}/approve` | Manager/HR approve |
+| POST | `/api/timesheets/{id}/reject` | Manager/HR reject (body: `{ "reason": "..." }`) |
+| POST | `/api/timesheets/{id}/reopen` | Employee reopen after rejection -> Draft |
+| POST | `/api/timesheets/{id}/correct` | HR correction on locked timesheet |
+| GET | `/api/timesheets/{id}/audit` | Audit trail for a timesheet |
+
+#### Time Entries
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/timesheets/{id}/entries` | List entries |
+| POST | `/api/timesheets/{id}/entries` | Add entry |
+| PUT | `/api/timesheets/{id}/entries/{entryId}` | Update entry |
+| DELETE | `/api/timesheets/{id}/entries/{entryId}` | Remove entry |
+
+#### Project Codes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/project-codes` | List active codes (tenant-scoped) |
+| POST | `/api/project-codes` | Create code (HR/Admin) |
+| PUT | `/api/project-codes/{id}` | Update code |
+| DELETE | `/api/project-codes/{id}` | Deactivate code (soft delete) |
+| GET | `/api/project-codes/{id}/burn` | Hours burn summary |
+
+#### Policy
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/timesheets/policy` | Get tenant period policy |
+| PUT | `/api/timesheets/policy` | Update tenant period policy (Admin) |
+| GET | `/api/timesheets/approval-policy` | Get approval policy |
+| PUT | `/api/timesheets/approval-policy` | Update approval policy (Admin) |
+
+#### Reporting
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/timesheets/reports/summary` | Hours by employee x project x period |
+| GET | `/api/timesheets/reports/burn` | Project burn report |
+| GET | `/api/timesheets/reports/export` | CSV export (Finance role) |
+
+---
+
+### 10. UI/UX Design
+
+#### Employee: Weekly Timesheet View
+
+```
++------------------------------------------------------------------+
+|  Week 10-14 Nov 2026                            [Draft]  [Submit]|
++------------------+------+------+------+------+------+-----------+
+| Project / Task   | Mon  | Tue  | Wed  | Thu  | Fri  |  Total    |
++------------------+------+------+------+------+------+-----------+
+| PRJ-001 Portal   |  4   |  3.5 |  -   |  2   |  4   |  13.5 h  |
+| PRJ-002 Support  |  -   |  -   |  4   |  2   |  -   |   6.0 h  |
+| ADMIN-01 Admin   |  -   |  0.5 |  -   |  1   |  -   |   1.5 h  |
+| [+ Add row]      |      |      |      |      |      |          |
++------------------+------+------+------+------+------+-----------+
+| Total            |  4   |  4   |  4   |  5   |  4   |  21.0 h  |
++------------------+------+------+------+------+------+-----------+
+```
+
+- Cells are inline-editable (click to type)
+- Hours from BC-07 attendance can be imported as a scaffold ("Import from attendance" button)
+- Overtime cells highlighted amber
+- Status pill: Draft / Submitted / Approved / Rejected / Locked
+- Submit button disabled if any day total > 24
+
+#### Manager: Approval Queue
+
+```
++-----------------------------------------------------------+
+|  Pending Approval (3)                                     |
++------------------+-----------------+------+---------------+
+| Employee         | Period          | Hours| Actions       |
++------------------+-----------------+------+---------------+
+| Ahmad Razif      | 10-14 Nov       | 38 h | [Review] [>]  |
+| Nurul Ain        | 10-14 Nov       | 40 h | [Review] [>]  |
+| Haji Zainol      | 3-7 Nov         | 35 h | [Review] [>]  |
++------------------+-----------------+------+---------------+
+```
+
+Review opens an inline panel showing the grid + comment box + Approve / Return buttons.
+
+#### HR: Project Burn Dashboard
+
+- Summary cards: Total billable hours this month / budget consumed %
+- Table: Project Code | Budget | Used | Remaining | % | Trend
+- Export to CSV button (Finance role only)
+
+---
+
+### 11. Reporting
+
+| Report | Dimensions | Filters | Format |
+|--------|-----------|---------|--------|
+| Employee Timesheet Summary | Employee, Period, Project Code | Date range, Status, Department | Table + CSV |
+| Project Burn | Project Code, Month | Date range, Billable flag | Bar chart + Table |
+| Overtime Analysis | Employee, Week | Date range, Department | Table + CSV |
+| Submission Rate | Employee, Month | Department | % gauge table |
+| Approval Turnaround | Manager, Month | — | Median hours table |
+
+**KPI Dashboard Widgets:**
+- Hours logged this week (self)
+- Pending approvals (manager)
+- Project at risk (> 90% burn)
+- Overdue timesheets (HR/Admin)
+
+---
+
+### 12. Subscription Packaging
+
+| Feature | Starter | Professional | Enterprise |
+|---------|---------|-------------|-----------|
+| Attendance tracking (BC-07) | Yes | Yes | Yes |
+| Basic timesheet (manual entry, weekly) | — | Yes | Yes |
+| Manager approval workflow | — | Yes | Yes |
+| Project code catalogue (up to 20 codes) | — | Yes | Yes |
+| Unlimited project codes | — | — | Yes |
+| Import from attendance | — | Yes | Yes |
+| Escalation / approval policy config | — | — | Yes |
+| Payroll integration (BC-18) | — | — | Yes |
+| Burn dashboard | — | Yes | Yes |
+| CSV export | — | Yes | Yes |
+| API access (external billing integration) | — | — | Yes |
+
+---
+
+### 13. Delivery Roadmap
+
+BC-20 is a Wave 2 capability. Prerequisite: BC-07 Attendance GA (Sprint 3 complete).
+
+#### Sprint 5 — Foundation (2 weeks)
+
+| Task | Owner |
+|------|-------|
+| Domain entities, DB migration (timesheets, time_entries_ts, project_codes, tasks) | Backend |
+| CQRS commands: CreateTimesheet, AddEntry, UpdateEntry, DeleteEntry, SubmitTimesheet | Backend |
+| CQRS queries: GetTimesheets, GetTimesheetById | Backend |
+| REST endpoints: timesheet CRUD + submit | Backend |
+| Project Code CRUD endpoints | Backend |
+| Weekly timesheet grid UI (read + inline edit) | Frontend |
+| Project code management page (Admin) | Frontend |
+
+#### Sprint 6 — Approval & Policy (2 weeks)
+
+| Task | Owner |
+|------|-------|
+| ApproveTimesheet, RejectTimesheet, ReopenTimesheet commands | Backend |
+| Approval policy entity + endpoints | Backend |
+| Manager approval queue UI | Frontend |
+| Notifications: submitted, approved, rejected, deadline reminder | Backend |
+| Escalation engine (background job, EscalationEnabled policy) | Backend |
+| Employee reopen flow after rejection | Frontend |
+
+#### Sprint 7 — Reporting & Lock (2 weeks)
+
+| Task | Owner |
+|------|-------|
+| Lock mechanism (triggered by payroll event stub) | Backend |
+| HR correction flow (CorrectTimesheet command, audit entry) | Backend |
+| Project burn report + dashboard widget | Full Stack |
+| Employee timesheet summary report + CSV export | Backend + Frontend |
+| Submission rate / approval turnaround KPIs | Backend |
+| "Import from attendance" scaffold feature | Full Stack |
+
+#### Sprint 8 — Integration & Polish (2 weeks)
+
+| Task | Owner |
+|------|-------|
+| Outbox pattern for domain events | Backend |
+| BC-18 Payroll integration stub (TimesheetApproved event handler) | Backend |
+| Mobile: timesheet view + submit + pull-to-refresh | Mobile |
+| Mobile: manager approval swipe action | Mobile |
+| Performance: index review, query optimisation | Backend |
+| Security: RBAC audit, penetration test items | Backend |
+
+---
+
+### 14. Architecture Validation
+
+#### Conformance to Circlate Clean Architecture
+
+| Layer | BC-20 Component | Conforms? |
+|-------|----------------|-----------|
+| Domain | `Timesheet`, `TimeEntry`, `ProjectCode`, `Task`, `TimesheetAuditEntry` entities; `TimesheetStatus` enum; invariants as domain methods | Yes |
+| Application | CQRS commands/queries via MediatR; `IAppDbContext` interface; no infrastructure imports | Yes |
+| Infrastructure | EF Core configurations, Outbox publisher, background escalation job | Yes |
+| API | Minimal API endpoint groups `/api/timesheets`, `/api/project-codes`; `RequireAuthorization()` on all; `GetTenantId(ctx)` for multi-tenancy | Yes |
+| Frontend | Server components for page shell + data fetch; client components for timesheet grid interactivity | Yes |
+
+#### Multi-tenancy
+
+All queries and mutations are scoped by `TenantId` via `GetTenantId(HttpContext)`. Project codes, timesheets, and policies are tenant-isolated. No cross-tenant data leakage possible through any exposed endpoint.
+
+#### Security
+
+- **RBAC enforcement:** Employee can only view/edit own timesheets; Manager can approve/reject reports within their subtree (resolved via BC-10); HR can override any; Admin manages policy.
+- **Locked timesheets:** Enforced at application layer — `CorrectTimesheetCommandHandler` checks `Status == Locked` before allowing correction, and always writes audit entry first.
+- **Audit trail:** All status transitions write to `timesheet_audit_entries` before state change (consistent with event-sourcing lite pattern).
+- **No clock drift attacks:** `Hours` validated server-side; daily cap (24h) enforced by domain invariant.
+
+#### Scalability
+
+- Timesheets are tenant-partitioned; horizontal sharding by `tenant_id` is straightforward when volume requires it.
+- Approval queue query is indexed on `(tenant_id, status)` — O(log n) for typical SME workloads.
+- Burn report is pre-aggregated nightly by a background job for tenants with > 50 project codes; real-time for smaller catalogues.
+
+#### Integration Points
+
+| System | Direction | Mechanism |
+|--------|-----------|-----------|
+| BC-07 Attendance | Inbound | Query attendance `time_entries` by employee + date range to scaffold timesheet entries |
+| BC-10 Org Chart | Inbound | Query `GetManagerForEmployee` to resolve approver |
+| BC-18 Payroll (future) | Outbound | `TimesheetApproved` / `TimesheetLocked` domain events via Outbox |
+| External billing (ERP, Quickbooks) | Outbound | CSV export + optional webhook on `TimesheetLocked` |
+
+#### Risks & Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| Employees bulk-enter fictitious hours | Medium | High | Manager approval gate; HR correction audit trail; anomaly flag if hours >> attendance hours by > 20% |
+| Manager approval bottleneck | Low | Medium | Escalation timeout configurable; default 48 h; Disabled mode available for flat orgs |
+| Table name collision with BC-07 `time_entries` | High (addressed) | High | Named `time_entries_ts`; view `v_employee_daily_hours` joins both |
+| Sprint 5–8 scope creep | Medium | Medium | Mobile deferred to Sprint 8; API-first approach enables mobile to follow web |
+
+---
+
+*BC-20 Workforce Time Management — Principal Architect Sign-off: 2026-11-11*
