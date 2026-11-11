@@ -8363,9 +8363,9 @@ Review opens an inline panel showing the grid + comment box + Approve / Return b
 
 ### 13. Delivery Roadmap
 
-BC-20 is a Wave 2 capability. Prerequisite: BC-07 Attendance GA (Sprint 3 complete).
+BC-20 is a Wave 2 capability (Professional Tier). These phases begin after MVP GA (Sprint 9) and run in parallel with or after the core Wave 2 roadmap, as a Professional/Enterprise tier track.
 
-#### Sprint 5 — Foundation (2 weeks)
+#### Phase 1 — Foundation (2 weeks)
 
 | Task | Owner |
 |------|-------|
@@ -8377,7 +8377,7 @@ BC-20 is a Wave 2 capability. Prerequisite: BC-07 Attendance GA (Sprint 3 comple
 | Weekly timesheet grid UI (read + inline edit) | Frontend |
 | Project code management page (Admin) | Frontend |
 
-#### Sprint 6 — Approval & Policy (2 weeks)
+#### Phase 2 — Approval & Policy (2 weeks)
 
 | Task | Owner |
 |------|-------|
@@ -8388,7 +8388,7 @@ BC-20 is a Wave 2 capability. Prerequisite: BC-07 Attendance GA (Sprint 3 comple
 | Escalation engine (background job, EscalationEnabled policy) | Backend |
 | Employee reopen flow after rejection | Frontend |
 
-#### Sprint 7 — Reporting & Lock (2 weeks)
+#### Phase 3 — Reporting & Lock (2 weeks)
 
 | Task | Owner |
 |------|-------|
@@ -8399,7 +8399,7 @@ BC-20 is a Wave 2 capability. Prerequisite: BC-07 Attendance GA (Sprint 3 comple
 | Submission rate / approval turnaround KPIs | Backend |
 | "Import from attendance" scaffold feature | Full Stack |
 
-#### Sprint 8 — Integration & Polish (2 weeks)
+#### Phase 4 — Integration & Polish (2 weeks)
 
 | Task | Owner |
 |------|-------|
@@ -8457,7 +8457,7 @@ All queries and mutations are scoped by `TenantId` via `GetTenantId(HttpContext)
 | Employees bulk-enter fictitious hours | Medium | High | Manager approval gate; HR correction audit trail; anomaly flag if hours >> attendance hours by > 20% |
 | Manager approval bottleneck | Low | Medium | Escalation timeout configurable; default 48 h; Disabled mode available for flat orgs |
 | Table name collision with BC-07 `time_entries` | High (addressed) | High | Named `time_entries_ts`; view `v_employee_daily_hours` joins both |
-| Sprint 5–8 scope creep | Medium | Medium | Mobile deferred to Sprint 8; API-first approach enables mobile to follow web |
+| Phase 1–4 scope creep | Medium | Medium | Mobile deferred to Phase 4; API-first approach enables mobile to follow web |
 
 ---
 
